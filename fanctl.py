@@ -231,6 +231,7 @@ def cmd_run(cfg, dry_run):
           % (cfg["interval"] * 1000, cfg["emergency_c"]), flush=True)
     current = None
     logged = None
+    released = False
     while _running:
         try:
             temp = read_temp()
@@ -239,9 +240,23 @@ def cmd_run(cfg, dry_run):
             break
 
         if temp >= cfg["emergency_c"]:
-            print("fanctl: %.1f C >= %d C, releasing to EC"
-                  % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
-            break
+            if not released:
+                print("fanctl: %.1f C >= %d C, releasing to EC until it cools"
+                      % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
+                released = True
+            time.sleep(cfg["interval"])
+            continue
+
+        if released:
+            # Resume only once it has cooled past the deadband, otherwise the
+            # curve and the emergency threshold fight at the boundary.
+            if temp > cfg["emergency_c"] - cfg["hysteresis_c"]:
+                time.sleep(cfg["interval"])
+                continue
+            print("fanctl: %.1f C, resuming curve" % temp, flush=True)
+            released = False
+            current = None
+            logged = None
 
         target = duty_for(temp, cfg, current)
         current = target if current is None else slew(target, current, cfg)
@@ -261,15 +276,25 @@ def cmd_run(cfg, dry_run):
 def cmd_set(cfg, duty, dry_run):
     duty = max(cfg["min_duty"], min(100, duty))
     print("fanctl: holding %d %% until interrupted" % duty, flush=True)
+    released = False
     while _running:
         try:
             temp = read_temp()
         except OSError:
             break
         if temp >= cfg["emergency_c"]:
-            print("fanctl: %.1f C >= %d C, releasing to EC"
-                  % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
-            break
+            if not released:
+                print("fanctl: %.1f C >= %d C, releasing to EC until it cools"
+                      % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
+                released = True
+            time.sleep(cfg["interval"])
+            continue
+        if released:
+            if temp > cfg["emergency_c"] - cfg["hysteresis_c"]:
+                time.sleep(cfg["interval"])
+                continue
+            print("fanctl: %.1f C, resuming" % temp, flush=True)
+            released = False
         _apply(duty, cfg, dry_run)
         time.sleep(cfg["interval"])
     print("fanctl: stopped, EC has control", flush=True)
