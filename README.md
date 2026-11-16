@@ -1,5 +1,3 @@
-# ec-fan-curve
-
 # matebook-fan-curve
 
 Fan curve control for the Huawei MateBook X Pro 2021 (`MACHD-WXX9`, i7-1165G7,
