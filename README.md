@@ -7,6 +7,31 @@ BIOS 1.19) on Linux, by writing the EC's fan duty registers directly.
 **Problem:** the fan sits at ~5000 RPM at 50 °C idle and the firmware exposes no
 way to slow it down.
 
+## Supported hardware
+
+| Model | Status |
+|---|---|
+| `MACHD-WXX9` — MateBook X Pro 2021, i7-1165G7, BIOS 1.19 | **verified** |
+| other Huawei MateBooks | **untested** |
+
+The EC register addresses are model-specific. `install.sh` refuses to run on an
+unverified model unless you pass `--force`, and `fanctl` refuses to write at all
+if `0x2A04` does not read a plausible 0–100 value.
+
+If you have a different MateBook and want to find out whether it is compatible,
+do it read-only first:
+
+```bash
+sudo modprobe acpi_call
+sudo chmod 666 /proc/acpi/call
+./fanctl.py status
+```
+
+Check that the reported duty roughly matches the observed RPM (RPM is about
+`duty * 100` on the verified model). If it does not, the addresses are wrong for
+your machine — stop there and open an issue with your `product_name`,
+`board_name`, and BIOS version.
+
 ## Why the obvious tools don't work
 
 This BIOS has no usable fan control surface:
@@ -142,7 +167,24 @@ under sustained load is how you get a throttling laptop.
 
 ## Related
 
-- `../cpu-fan-huawei` — the reverse-engineering archive: DSDT, all SSDTs, and
-  the WMI findings this project came out of.
-- `../cpu-clamp-watch`, `../cpu-profile-daemon` — the CPU-side mitigations that
-  were tried before the EC registers were found.
+- [`matebook-fanctld`](https://github.com/duny31030/matebook-fanctld) — drives
+  `SFND` on other MateBook models. Does not work here: this BIOS lacks that
+  method entirely, which is what sent this project down the EC-RAM path.
+- [`nbfc-linux`](https://github.com/nbfc-linux/nbfc-linux) — generic EC fan
+  control for Linux. Has no Huawei configs.
+- [`acpi_call`](https://github.com/nix-community/acpi_call) — the kernel module
+  that exposes `/proc/acpi/call`, the only way to reach the EC from userspace.
+
+## How this was found
+
+Short version, in case it helps someone on a different model:
+
+1. `_FSL`/`_FST`/`_FPS` are absent from `TFN1`/`TFN2`, so the standard ACPI fan
+   path is dead. `acpi_fan` cooling devices exist but do nothing.
+2. `SFND`/`SFNM` (the methods `fanctld` uses) return `AE_NOT_FOUND`. The only
+   `ECCC` fan commands present are `0x46` and `0x48`, both binary toggles.
+3. Dumping the DSDT and reading `GFNS` showed the tachometers live at EC
+   `0x2A00`-`0x2A03`. The duty registers turned out to be the next two bytes.
+4. Confirmed by correlation: duty 50 → 5013 RPM, duty 48 → 4860 RPM.
+5. The EC recomputes duty about once a second, so writing faster than that holds
+   a lower value. That is the whole trick.

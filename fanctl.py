@@ -172,6 +172,27 @@ def read_fans():
     return out
 
 
+def preflight():
+    """Refuse to write if the EC does not look like the one we expect.
+
+    The duty registers are model-specific. A value outside 0-100 means we are
+    looking at something else entirely, and writing it would be reckless.
+    """
+    if not os.path.exists(ACPI):
+        raise SystemExit(
+            "fanctl: %s missing - run 'sudo modprobe acpi_call'" % ACPI)
+    if not os.access(ACPI, os.W_OK):
+        raise SystemExit("fanctl: %s not writable - run as root" % ACPI)
+
+    duty = read_byte(DUTY_REGS[0])
+    if duty is None or not 0 <= duty <= 100:
+        raise SystemExit(
+            "fanctl: EC 0x%04X reads %r, expected 0-100.\n"
+            "This does not look like a supported machine, so nothing was "
+            "written.\nRun 'fanctl status' to inspect, and see the README "
+            "section 'Supported hardware'." % (DUTY_REGS[0], duty))
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_status(cfg):
@@ -281,6 +302,8 @@ def main():
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
+
+    preflight()
 
     if args.command == "set":
         if args.value is None:
