@@ -86,16 +86,50 @@ def load_config(path):
         "interval": fan.get("interval_ms", 500) / 1000.0,
         "emergency_c": fan.get("emergency_c", 85),
         "min_duty": fan.get("min_duty", 25),
+        "hysteresis_c": fan.get("hysteresis_c", 1.5),
+        "max_step_up": fan.get("max_step_up", 10),
+        "max_step_down": fan.get("max_step_down", 2),
         "curve": points,
     }
 
 
-def duty_for(temp, cfg):
+def _step(temp, cfg):
+    """Raw step-function lookup, no hysteresis."""
     duty = cfg["curve"][0][1]
     for threshold, value in cfg["curve"]:
         if temp >= threshold:
             duty = value
     return max(duty, cfg["min_duty"])
+
+
+def duty_for(temp, cfg, current=None):
+    """Target duty for `temp`, with hysteresis around the current value.
+
+    Without `current` this is the plain step function. With it, a change only
+    happens once the temperature has moved `hysteresis_c` past the boundary,
+    so a value sitting on a threshold stops flapping between two duties.
+    """
+    raw = _step(temp, cfg)
+    if current is None or raw == current:
+        return raw
+
+    h = cfg["hysteresis_c"]
+    if raw > current:
+        return max(_step(temp - h, cfg), current)
+    return min(_step(temp + h, cfg), current)
+
+
+def slew(target, current, cfg):
+    """Limit how far duty may move in one tick.
+
+    Asymmetric on purpose: up fast for thermal safety, down slowly so the fan
+    does not audibly drop every time the load blips.
+    """
+    if target > current:
+        return min(target, current + cfg["max_step_up"])
+    if target < current:
+        return max(target, current - cfg["max_step_down"])
+    return current
 
 
 # ---------------------------------------------------------------- EC access
@@ -149,6 +183,8 @@ def cmd_status(cfg):
     print("duty      %s / %s %%   (EC's own value)" % tuple(
         "?" if d is None else d for d in duties))
     print("curve     %d %% at this temp" % duty_for(temp, cfg))
+    print("hysteresis %.1f C, slew +%d/-%d %% per tick"
+          % (cfg["hysteresis_c"], cfg["max_step_up"], cfg["max_step_down"]))
     print("emergency release at %d C" % cfg["emergency_c"])
 
 
@@ -158,6 +194,8 @@ def cmd_curve(cfg):
         print("%6d   %4d" % (temp, duty))
     print("\nmin_duty %d %%, interval %d ms, emergency %d C"
           % (cfg["min_duty"], cfg["interval"] * 1000, cfg["emergency_c"]))
+    print("hysteresis %.1f C, slew +%d/-%d %% per tick"
+          % (cfg["hysteresis_c"], cfg["max_step_up"], cfg["max_step_down"]))
 
 
 def _apply(duty, cfg, dry_run):
@@ -170,7 +208,8 @@ def _apply(duty, cfg, dry_run):
 def cmd_run(cfg, dry_run):
     print("fanctl: curve mode, %.0f ms interval, emergency at %d C"
           % (cfg["interval"] * 1000, cfg["emergency_c"]), flush=True)
-    last = None
+    current = None
+    logged = None
     while _running:
         try:
             temp = read_temp()
@@ -183,14 +222,16 @@ def cmd_run(cfg, dry_run):
                   % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
             break
 
-        duty = duty_for(temp, cfg)
-        if duty != last:
+        target = duty_for(temp, cfg, current)
+        current = target if current is None else slew(target, current, cfg)
+
+        if current != logged:
             fans = read_fans()
             print("fanctl: %.1f C -> %d %% (fan %d/%d RPM)"
-                  % (temp, duty, fans[0], fans[1]), flush=True)
-            last = duty
+                  % (temp, current, fans[0], fans[1]), flush=True)
+            logged = current
 
-        _apply(duty, cfg, dry_run)
+        _apply(current, cfg, dry_run)
         time.sleep(cfg["interval"])
 
     print("fanctl: stopped, EC has control", flush=True)

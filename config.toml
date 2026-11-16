@@ -26,6 +26,18 @@ emergency_c = 85
 # the fan stalls or hunts, which is worse than a little noise.
 min_duty = 25
 
+# Deadband around each curve boundary. Without it a temperature sitting on a
+# threshold (e.g. 55.0 C) flips duty every tick - measured at 84 changes/min.
+# A change now needs the temperature to move this far past the boundary.
+hysteresis_c = 1.5
+
+# Slew limiting: the most duty may move in one tick, in percent. Asymmetric
+# on purpose - up fast for thermal safety, down slowly so the fan does not
+# audibly drop every time the load blips. At 500 ms, 10/tick is 20%/s up and
+# 2/tick is 4%/s down.
+max_step_up = 10
+max_step_down = 2
+
 # [temperature_C, duty_percent]
 curve = [
   [0,  30],   # idle floor - this is the whole point of the project

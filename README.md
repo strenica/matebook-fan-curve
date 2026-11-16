@@ -67,9 +67,12 @@ That installs `/usr/local/bin/fanctl`, the config at
 
 ```toml
 [fan]
-interval_ms = 500
-emergency_c = 85
-min_duty    = 25
+interval_ms   = 500
+emergency_c   = 85
+min_duty      = 25
+hysteresis_c  = 1.5
+max_step_up   = 10
+max_step_down = 2
 
 curve = [
   [0,  30],   # idle floor
@@ -85,6 +88,16 @@ curve = [
 Each entry is `[temperature_C, duty_percent]`. It is a step function: the
 highest entry whose temperature is `<=` the current package temperature wins.
 `min_duty` is a hard floor regardless of what the curve says.
+
+`hysteresis_c` is a deadband around every boundary. Without it a temperature
+sitting on a threshold flips duty every tick — measured at 84 changes/min at
+55.0 °C, which is audible and pointless bearing wear. A change now needs the
+temperature to move this far past the boundary.
+
+`max_step_up` / `max_step_down` cap how far duty may move in one tick, in
+percent. They are asymmetric on purpose: up fast for thermal safety, down
+slowly so the fan does not audibly drop every time the load blips. At the
+default 500 ms interval, `10` is 20 %/s up and `2` is 4 %/s down.
 
 ## Usage
 
