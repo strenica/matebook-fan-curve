@@ -1,0 +1,38 @@
+# ec-fan-curve configuration
+#
+# The curve is a step function: for a given package temperature, the highest
+# entry whose `temp` is <= the current temperature wins. Duty is a percentage
+# of the fan's maximum; on this machine RPM is roughly duty * 100.
+#
+# Measured on MACHD-WXX9 (i7-1165G7, BIOS 1.19):
+#   duty 30% -> ~3050 RPM
+#   duty 35% -> ~3600 RPM
+#   duty 40% -> ~4000 RPM
+#   duty 50% -> ~5000 RPM   (what the EC picks on its own at ~50 C)
+#
+# The EC recomputes duty about once per second. fanctl rewrites faster than
+# that to hold these values, so the curve below is what you actually get.
+
+[fan]
+# How often to rewrite the duty registers. Must be well under 1000 ms or the
+# EC wins the race and the curve has no effect.
+interval_ms = 500
+
+# Above this temperature fanctl stops writing and hands control back to the
+# EC's own curve. This is the safety net, not a normal operating point.
+emergency_c = 85
+
+# Never command less than this, whatever the curve says. Below roughly 25%
+# the fan stalls or hunts, which is worse than a little noise.
+min_duty = 25
+
+# [temperature_C, duty_percent]
+curve = [
+  [0,  30],   # idle floor - this is the whole point of the project
+  [50, 30],
+  [55, 35],
+  [60, 45],
+  [65, 60],
+  [70, 80],
+  [75, 100],  # full blast from here up
+]

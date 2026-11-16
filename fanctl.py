@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""fanctl - EC fan curve controller for Huawei MateBook X Pro 2021 (MACHD-WXX9).
+
+The firmware exposes no fan RPM method. SFND/SFNM are absent, TFN1 has no
+_FSL/_FST/_FPS, and the only ECCC fan commands (0x46 via SFRS, 0x48 via SMLS)
+are binary mode toggles that do not reduce speed. Generic tools such as
+fanctld and nbfc cannot drive this machine.
+
+What does work: the EC keeps fan duty as a percentage in EC RAM at 0x2A04
+(fan 0) and 0x2A05 (fan 1), with RPM ~= duty * 100. The EC recomputes those
+registers roughly once per second, so writing faster than that holds a lower
+duty. Measured on this machine: 30% -> ~3050 RPM, 35% -> ~3600, 40% -> ~4000,
+50% (EC default at 50C) -> ~5000.
+
+Safety: above emergency_c the controller stops writing and lets the EC's own
+curve take over. Same on SIGTERM/SIGINT and on any exception. If this process
+dies the EC reclaims control within about a second, so the fan can never stay
+locked low.
+"""
+
+import argparse
+import os
+import signal
+import sys
+import time
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    tomllib = None
+
+ACPI = "/proc/acpi/call"
+EC = "\\_SB.PC00.LPCB.H_EC"
+DUTY_REGS = (0x2A04, 0x2A05)
+TEMP_PATH = "/sys/class/thermal/thermal_zone11/temp"
+FAN_PATHS = (
+    "/sys/class/hwmon/hwmon1/fan1_input",
+    "/sys/class/hwmon/hwmon2/fan1_input",
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG = os.path.join(HERE, "config.toml")
+
+_running = True
+
+
+def _stop(signum, frame):
+    global _running
+    _running = False
+
+
+# ---------------------------------------------------------------- config
+
+def load_config(path):
+    if tomllib is None:
+        raise SystemExit("fanctl: Python 3.11+ required for tomllib")
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+
+    fan = raw.get("fan", {})
+    curve = fan.get("curve")
+    if not curve:
+        raise SystemExit("fanctl: %s has no [[fan.curve]] entries" % path)
+
+    points = sorted((int(t), int(d)) for t, d in curve)
+    for temp, duty in points:
+        if not 0 <= duty <= 100:
+            raise SystemExit("fanctl: duty %d out of range in %s" % (duty, path))
+
+    return {
+        "interval": fan.get("interval_ms", 500) / 1000.0,
+        "emergency_c": fan.get("emergency_c", 85),
+        "min_duty": fan.get("min_duty", 25),
+        "curve": points,
+    }
+
+
+def duty_for(temp, cfg):
+    duty = cfg["curve"][0][1]
+    for threshold, value in cfg["curve"]:
+        if temp >= threshold:
+            duty = value
+    return max(duty, cfg["min_duty"])
+
+
+# ---------------------------------------------------------------- EC access
+
+def acpi(cmd):
+    with open(ACPI, "w") as f:
+        f.write(cmd)
+    with open(ACPI, "rb") as f:
+        return f.read().replace(b"\x00", b"").decode(errors="ignore")
+
+
+def read_byte(addr):
+    out = acpi("\\%s.RDER 0x%04X" % (EC, addr))
+    for tok in out.split():
+        if tok.startswith("0x"):
+            try:
+                return int(tok, 16)
+            except ValueError:
+                return None
+    return None
+
+
+def write_byte(addr, value):
+    acpi("\\%s.WTER 0x%04X 0x%02X" % (EC, addr, value & 0xFF))
+
+
+def read_temp():
+    with open(TEMP_PATH) as f:
+        return int(f.read().strip()) / 1000.0
+
+
+def read_fans():
+    out = []
+    for path in FAN_PATHS:
+        try:
+            with open(path) as f:
+                out.append(int(f.read().strip()))
+        except OSError:
+            out.append(0)
+    return out
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_status(cfg):
+    temp = read_temp()
+    fans = read_fans()
+    duties = [read_byte(a) for a in DUTY_REGS]
+    print("temp      %.1f C" % temp)
+    print("fan0      %d RPM   fan1 %d RPM" % (fans[0], fans[1]))
+    print("duty      %s / %s %%   (EC's own value)" % tuple(
+        "?" if d is None else d for d in duties))
+    print("curve     %d %% at this temp" % duty_for(temp, cfg))
+    print("emergency release at %d C" % cfg["emergency_c"])
+
+
+def cmd_curve(cfg):
+    print("temp C   duty %")
+    for temp, duty in cfg["curve"]:
+        print("%6d   %4d" % (temp, duty))
+    print("\nmin_duty %d %%, interval %d ms, emergency %d C"
+          % (cfg["min_duty"], cfg["interval"] * 1000, cfg["emergency_c"]))
+
+
+def _apply(duty, cfg, dry_run):
+    if dry_run:
+        return
+    for addr in DUTY_REGS:
+        write_byte(addr, duty)
+
+
+def cmd_run(cfg, dry_run):
+    print("fanctl: curve mode, %.0f ms interval, emergency at %d C"
+          % (cfg["interval"] * 1000, cfg["emergency_c"]), flush=True)
+    last = None
+    while _running:
+        try:
+            temp = read_temp()
+        except OSError as exc:
+            print("fanctl: cannot read temp: %s" % exc, file=sys.stderr)
+            break
+
+        if temp >= cfg["emergency_c"]:
+            print("fanctl: %.1f C >= %d C, releasing to EC"
+                  % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
+            break
+
+        duty = duty_for(temp, cfg)
+        if duty != last:
+            fans = read_fans()
+            print("fanctl: %.1f C -> %d %% (fan %d/%d RPM)"
+                  % (temp, duty, fans[0], fans[1]), flush=True)
+            last = duty
+
+        _apply(duty, cfg, dry_run)
+        time.sleep(cfg["interval"])
+
+    print("fanctl: stopped, EC has control", flush=True)
+
+
+def cmd_set(cfg, duty, dry_run):
+    duty = max(cfg["min_duty"], min(100, duty))
+    print("fanctl: holding %d %% until interrupted" % duty, flush=True)
+    while _running:
+        try:
+            temp = read_temp()
+        except OSError:
+            break
+        if temp >= cfg["emergency_c"]:
+            print("fanctl: %.1f C >= %d C, releasing to EC"
+                  % (temp, cfg["emergency_c"]), file=sys.stderr, flush=True)
+            break
+        _apply(duty, cfg, dry_run)
+        time.sleep(cfg["interval"])
+    print("fanctl: stopped, EC has control", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="EC fan curve controller for Huawei MateBook X Pro 2021")
+    parser.add_argument("command", nargs="?", default="run",
+                        choices=["run", "status", "curve", "set"],
+                        help="run the curve (default), show status, show the "
+                             "curve, or hold a fixed duty")
+    parser.add_argument("value", nargs="?", type=int,
+                        help="duty percentage for 'set'")
+    parser.add_argument("--config", default=DEFAULT_CONFIG,
+                        help="path to config.toml")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="compute and log, but never write to the EC")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+
+    if args.command == "status":
+        cmd_status(cfg)
+        return 0
+    if args.command == "curve":
+        cmd_curve(cfg)
+        return 0
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+
+    if args.command == "set":
+        if args.value is None:
+            parser.error("'set' needs a duty percentage")
+        cmd_set(cfg, args.value, args.dry_run)
+    else:
+        cmd_run(cfg, args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

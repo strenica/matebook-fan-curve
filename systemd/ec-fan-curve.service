@@ -1,0 +1,20 @@
+[Unit]
+Description=EC fan curve controller (Huawei MateBook)
+Documentation=file:///usr/local/share/doc/ec-fan-curve/README.md
+After=multi-user.target
+
+[Service]
+Type=simple
+# acpi_call provides /proc/acpi/call, the only way to reach the EC from
+# userspace. It is not autoloaded, so load it here.
+ExecStartPre=/sbin/modprobe acpi_call
+ExecStart=/usr/local/bin/fanctl run --config /etc/ec-fan-curve/config.toml
+Restart=on-failure
+RestartSec=3
+
+# No ExecStopPost is needed: the EC recomputes fan duty on its own within
+# about a second of this process exiting, so the fan can never stay locked
+# at a low duty after a stop or crash.
+
+[Install]
+WantedBy=multi-user.target
