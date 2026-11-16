@@ -99,7 +99,10 @@ install -m644 "$REPO_DIR/README.md" "$DOC_DIR/README.md"
 say "installing systemd unit"
 install -m644 "$REPO_DIR/systemd/ec-fan-curve.service" "$UNIT_DST"
 systemctl daemon-reload
-systemctl enable --now ec-fan-curve.service
+systemctl enable ec-fan-curve.service
+# restart, not 'enable --now': on a reinstall the service is already running,
+# and 'enable --now' leaves the old process (and old code) in place.
+systemctl restart ec-fan-curve.service
 
 say "done"
 systemctl --no-pager --lines=5 status ec-fan-curve.service || true
