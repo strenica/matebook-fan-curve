@@ -39,7 +39,22 @@ FAN_PATHS = (
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CONFIG = os.path.join(HERE, "config.toml")
+CONFIG_CANDIDATES = (
+    os.path.join(HERE, "config.toml"),
+    "/etc/ec-fan-curve/config.toml",
+)
+
+
+def default_config():
+    """Prefer a config next to the script, else the installed one.
+
+    Installed to /usr/local/bin the script has no config beside it, so the
+    /etc path is what actually gets used in production.
+    """
+    for path in CONFIG_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return CONFIG_CANDIDATES[0]
 
 _running = True
 
@@ -207,13 +222,14 @@ def main():
                              "curve, or hold a fixed duty")
     parser.add_argument("value", nargs="?", type=int,
                         help="duty percentage for 'set'")
-    parser.add_argument("--config", default=DEFAULT_CONFIG,
-                        help="path to config.toml")
+    parser.add_argument("--config", default=None,
+                        help="path to config.toml (default: next to the "
+                             "script, else /etc/ec-fan-curve/config.toml)")
     parser.add_argument("--dry-run", action="store_true",
                         help="compute and log, but never write to the EC")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config or default_config())
 
     if args.command == "status":
         cmd_status(cfg)
