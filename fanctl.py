@@ -133,6 +133,21 @@ def slew(target, current, cfg):
     return current
 
 
+def should_idle(temp, cfg, idle):
+    """True while the curve should stay out of the EC's way.
+
+    Hysteresis on the way out: once released, stay released until the
+    temperature climbs hysteresis_c above idle_c. Without that, a value
+    sitting on the boundary flaps between 'EC turns the fan off' and 'curve
+    commands min_duty', which is audible as the fan starting and stopping.
+    """
+    if temp < cfg["idle_c"]:
+        return True
+    if idle and temp < cfg["idle_c"] + cfg["hysteresis_c"]:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------- EC access
 
 def acpi(cmd):
@@ -246,7 +261,7 @@ def cmd_run(cfg, dry_run):
         # Below idle_c the EC wants the fan off and we want it at min_duty.
         # Writing anyway makes the two fight, which is audible as the fan
         # starting and stopping. Hand control back instead.
-        if temp < cfg["idle_c"]:
+        if should_idle(temp, cfg, idle):
             if not idle:
                 print("fanctl: %.1f C below idle_c, releasing to EC"
                       % temp, flush=True)

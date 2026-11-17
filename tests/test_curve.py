@@ -18,6 +18,7 @@ CFG = {
     "hysteresis_c": 1.5,
     "max_step_up": 10,
     "max_step_down": 2,
+    "idle_c": 45,
     "curve": [(0, 30), (50, 30), (55, 35), (60, 45), (65, 60), (70, 80), (75, 100)],
 }
 
@@ -118,6 +119,31 @@ class TestSlew(unittest.TestCase):
             d = fanctl.slew(30, d, CFG)
             down += 1
         self.assertGreater(down, up)
+
+
+class TestShouldIdle(unittest.TestCase):
+    """idle_c must not flap at its own boundary either."""
+
+    def test_below_idle_c_releases(self):
+        self.assertTrue(fanctl.should_idle(44.9, CFG, idle=False))
+
+    def test_at_idle_c_runs_curve(self):
+        self.assertFalse(fanctl.should_idle(45.0, CFG, idle=False))
+
+    def test_stays_released_inside_deadband(self):
+        self.assertTrue(fanctl.should_idle(45.0, CFG, idle=True))
+        self.assertTrue(fanctl.should_idle(46.4, CFG, idle=True))
+
+    def test_resumes_past_deadband(self):
+        self.assertFalse(fanctl.should_idle(46.5, CFG, idle=True))
+
+    def test_steady_at_boundary_never_flaps(self):
+        # the exact failure seen on hardware: once released, 45.0 C must not
+        # flip back to running the curve and spin the fan up again
+        idle = True
+        for _ in range(50):
+            idle = fanctl.should_idle(45.0, CFG, idle)
+        self.assertTrue(idle)
 
 
 if __name__ == "__main__":
