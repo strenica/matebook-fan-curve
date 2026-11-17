@@ -177,14 +177,46 @@ def read_temp():
         return int(f.read().strip()) / 1000.0
 
 
+def fan_paths():
+    """Locate the acpi_fan hwmon devices by name, not by number.
+
+    hwmon numbering is not stable across reboots: the same machine reported
+    the fans as hwmon1/hwmon2 on one boot and hwmon1/hwmon3 on the next, with
+    hwmon2 becoming the battery. Hardcoding the numbers silently reads the
+    wrong device.
+    """
+    base = "/sys/class/hwmon"
+    found = []
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return list(FAN_PATHS)
+
+    for entry in entries:
+        dev = os.path.join(base, entry)
+        try:
+            with open(os.path.join(dev, "name")) as f:
+                if f.read().strip() != "acpi_fan":
+                    continue
+        except OSError:
+            continue
+        path = os.path.join(dev, "fan1_input")
+        if os.path.exists(path):
+            found.append(path)
+
+    return found or list(FAN_PATHS)
+
+
 def read_fans():
     out = []
-    for path in FAN_PATHS:
+    for path in fan_paths():
         try:
             with open(path) as f:
                 out.append(int(f.read().strip()))
         except OSError:
             out.append(0)
+    while len(out) < 2:
+        out.append(0)
     return out
 
 
