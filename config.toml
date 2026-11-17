@@ -26,6 +26,12 @@ emergency_c = 85
 # the fan stalls or hunts, which is worse than a little noise.
 min_duty = 25
 
+# Below this temperature, hand control back to the EC instead of writing.
+# The EC turns the fan off when the machine is cool; forcing min_duty there
+# makes the two fight, which is audible as the fan starting and stopping.
+# Set to 0 to disable the cutoff and always run the curve.
+idle_c = 45
+
 # Deadband around each curve boundary. Without it a temperature sitting on a
 # threshold (e.g. 55.0 C) flips duty every tick - measured at 84 changes/min.
 # A change now needs the temperature to move this far past the boundary.

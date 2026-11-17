@@ -89,6 +89,7 @@ def load_config(path):
         "hysteresis_c": fan.get("hysteresis_c", 1.5),
         "max_step_up": fan.get("max_step_up", 10),
         "max_step_down": fan.get("max_step_down", 2),
+        "idle_c": fan.get("idle_c", 45),
         "curve": points,
     }
 
@@ -206,6 +207,7 @@ def cmd_status(cfg):
     print("curve     %d %% at this temp" % duty_for(temp, cfg))
     print("hysteresis %.1f C, slew +%d/-%d %% per tick"
           % (cfg["hysteresis_c"], cfg["max_step_up"], cfg["max_step_down"]))
+    print("idle_c %d C (release to EC below this)" % cfg["idle_c"])
     print("emergency release at %d C" % cfg["emergency_c"])
 
 
@@ -217,6 +219,7 @@ def cmd_curve(cfg):
           % (cfg["min_duty"], cfg["interval"] * 1000, cfg["emergency_c"]))
     print("hysteresis %.1f C, slew +%d/-%d %% per tick"
           % (cfg["hysteresis_c"], cfg["max_step_up"], cfg["max_step_down"]))
+    print("idle_c %d C (release to EC below this)" % cfg["idle_c"])
 
 
 def _apply(duty, cfg, dry_run):
@@ -232,12 +235,29 @@ def cmd_run(cfg, dry_run):
     current = None
     logged = None
     released = False
+    idle = False
     while _running:
         try:
             temp = read_temp()
         except OSError as exc:
             print("fanctl: cannot read temp: %s" % exc, file=sys.stderr)
             break
+
+        # Below idle_c the EC wants the fan off and we want it at min_duty.
+        # Writing anyway makes the two fight, which is audible as the fan
+        # starting and stopping. Hand control back instead.
+        if temp < cfg["idle_c"]:
+            if not idle:
+                print("fanctl: %.1f C below idle_c, releasing to EC"
+                      % temp, flush=True)
+                idle = True
+            time.sleep(cfg["interval"])
+            continue
+        if idle:
+            print("fanctl: %.1f C, resuming curve" % temp, flush=True)
+            idle = False
+            current = None
+            logged = None
 
         if temp >= cfg["emergency_c"]:
             if not released:
