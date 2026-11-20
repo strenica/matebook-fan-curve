@@ -32,6 +32,65 @@ say() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Add any key present in the shipped config but missing from the installed one.
+# Keeps the user's values and comments; only appends what is absent, so a new
+# setting added to the repo reaches an existing install instead of being
+# silently covered by a code default.
+merge_config() {
+    local defaults=$1 target=$2
+    python3 - "$defaults" "$target" <<'PY'
+import re
+import sys
+import tomllib
+
+defaults_path, target_path = sys.argv[1], sys.argv[2]
+
+with open(defaults_path, "rb") as f:
+    defaults = tomllib.load(f).get("fan", {})
+with open(target_path, "rb") as f:
+    current = tomllib.load(f).get("fan", {})
+
+missing = {k: v for k, v in defaults.items() if k not in current}
+if not missing:
+    print("config already has every key")
+    raise SystemExit(0)
+
+
+def fmt(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return '"%s"' % value
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(fmt(v) for v in value) + "]"
+    raise TypeError("cannot serialise %r" % (value,))
+
+
+lines = open(target_path).read().splitlines(keepends=True)
+
+start = next((i for i, l in enumerate(lines) if l.strip() == "[fan]"), None)
+if start is None:
+    lines.append("\n[fan]\n")
+    start = len(lines) - 1
+
+end = len(lines)
+# A table header is [name]; an array element like [0, 30], is not. Requiring a
+# leading letter keeps the insert out of a multi-line `curve = [...]` block.
+HEADER = re.compile(r"^\s*\[[A-Za-z_][A-Za-z0-9_.-]*\]\s*$")
+for j in range(start + 1, len(lines)):
+    if HEADER.match(lines[j]):
+        end = j
+        break
+
+block = "".join("%s = %s\n" % (k, fmt(v)) for k, v in missing.items())
+lines.insert(end, block)
+open(target_path, "w").write("".join(lines))
+print("added: " + ", ".join(missing))
+PY
+}
+
 [[ $EUID -eq 0 ]] || die "run with sudo"
 
 command -v python3 >/dev/null || die "python3 not found"
@@ -87,7 +146,8 @@ install -Dm755 "$REPO_DIR/fanctl.py" "$BIN_DST"
 say "installing config to $CONF_DST"
 install -d "$CONF_DIR"
 if [[ -e "$CONF_DST" ]]; then
-    say "config already exists, leaving it alone"
+    say "config exists, merging in any new keys"
+    merge_config "$REPO_DIR/config.toml" "$CONF_DST"
 else
     install -m644 "$REPO_DIR/config.toml" "$CONF_DST"
 fi
